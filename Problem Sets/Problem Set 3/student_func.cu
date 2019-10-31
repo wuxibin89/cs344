@@ -170,19 +170,53 @@ __global__ void histogram(const float *const d_logLuminance, size_t numElems,
   }
 }
 
-// Hillis & Steele inclusive scan
-__global__ void HS_scan(unsigned int *const d_cdf, size_t numBins) {
+__global__ void HS_scan_kernel(unsigned int *d_cdf, unsigned int *d_out,
+                               int numBins, int stride) {
   int gid = threadIdx.x + blockIdx.x * blockDim.x;
-
-  if (gid == 0) {
-    int init = 0;
-    for (int i = 0; i < numBins; ++i) {
-      init += d_cdf[i];
-      d_cdf[i] = init;
+  if (gid < numBins) {
+    if (gid - stride < 0) {
+      d_out[gid] = d_cdf[gid];
+    } else {
+      d_out[gid] = d_cdf[gid] + d_cdf[gid - stride];
     }
   }
+}
 
-  // TODO
+// Hillis & Steele inclusive scan
+void HS_scan_impl(unsigned int **d_cdf, unsigned int **d_out, int numBins) {
+  int block_size = 1024;
+  for (int stride = 1; stride < numBins; stride <<= 1) {
+    // swith input and output every step
+    if (stride != 1) {
+      unsigned int *temp = *d_cdf;
+      *d_cdf = *d_out;
+      *d_out = temp;
+    }
+
+    int grid_size = (numBins + block_size - 1) / block_size;
+    HS_scan_kernel<<<grid_size, block_size>>>(*d_cdf, *d_out, numBins, stride);
+
+    // TODO: should just copy d_cdf to d_out to reduce threads num in next step?
+  }
+}
+
+void HS_scan(unsigned int *const h_cdf, int numBins) {
+  // need an out array to avoid data race
+  unsigned int *d_cdf, *d_out;
+  checkCudaErrors(cudaMalloc(&d_cdf, numBins * sizeof(unsigned int)));
+  checkCudaErrors(cudaMalloc(&d_out, numBins * sizeof(unsigned int)));
+
+  checkCudaErrors(cudaMemcpy(d_cdf, h_cdf, numBins * sizeof(unsigned int),
+                             cudaMemcpyHostToDevice));
+  checkCudaErrors(cudaMemcpy(d_out, h_cdf, numBins * sizeof(unsigned int),
+                             cudaMemcpyHostToDevice));
+
+  HS_scan_impl(&d_cdf, &d_out, numBins);
+  checkCudaErrors(cudaMemcpy(h_cdf, d_out, numBins * sizeof(unsigned int),
+                             cudaMemcpyDeviceToHost));
+
+  checkCudaErrors(cudaFree(d_cdf));
+  checkCudaErrors(cudaFree(d_out));
 }
 
 // Blelloch exclusive scan

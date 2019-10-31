@@ -32,8 +32,13 @@ NVCC_OPTS=-O3 -std=c++11 -arch=sm_50 -Xcompiler -Wall -Xcompiler -Wextra -m64 --
 
 GCC_OPTS=-O3 -Wall -Wextra -m64 -std=c++11
 
+all: student scan_test
+
 student: main.o student_func.o HW3.o loadSaveImage.o compare.o reference_calc.o Makefile
 	$(NVCC) -o HW3 main.o student_func.o HW3.o loadSaveImage.o compare.o reference_calc.o -L $(OPENCV_LIBPATH) $(OPENCV_LIBS) $(NVCC_OPTS)
+
+scan_test: scan_test.o student_func.o
+	$(NVCC) $(NVCC_OPTS) scan_test.o student_func.o -o $@
 
 main.o: main.cpp timer.h utils.h reference_calc.h compare.h
 	g++ -c main.cpp $(GCC_OPTS) -I $(CUDA_INCLUDEPATH)
@@ -54,5 +59,5 @@ student_func.o: student_func.cu utils.h
 	$(NVCC) -c student_func.cu $(NVCC_OPTS)
 
 clean:
-	rm -f *.o hw
+	rm -f *.o hw scan_test
 	find . -type f -name '*.exr' | grep -v memorial | xargs rm -f
