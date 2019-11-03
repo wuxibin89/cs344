@@ -7,13 +7,14 @@ void HS_scan(unsigned int *const h_cdf, int numBins, int block_size);
 void Blelloch_scan(unsigned int *const h_cdf, int numBins, int block_size);
 
 int main(int argc, char **argv) {
-  if (argc != 3) {
-    std::cerr << "usage: " << argv[0] << " nelems block_size" << endl;
+  if (argc != 4) {
+    std::cerr << "usage: " << argv[0] << " type nelems block_size" << endl;
     return -1;
   }
 
-  int nelems = std::stoi(argv[1]);
-  int block_size = std::stoi(argv[2]);
+  int type = std::stoi(argv[1]);
+  int nelems = std::stoi(argv[2]);
+  int block_size = std::stoi(argv[3]);
 
   std::random_device rd;
   std::mt19937 gen(rd());
@@ -33,9 +34,21 @@ int main(int argc, char **argv) {
     ex_init += data[i];
   }
 
-  HS_scan(data, nelems, block_size);
+  uint32_t *truth;
+  switch (type) {
+  case 0:
+    HS_scan(data, nelems, block_size);
+    truth = in_scan;
+    break;
+  case 1:
+    Blelloch_scan(data, nelems, block_size);
+    truth = ex_scan;
+  default:
+    break;
+  }
+
   for (int i = 0; i < nelems; ++i) {
-    if (data[i] != in_scan[i]) {
+    if (data[i] != truth[i]) {
       std::cerr << "[" << i << "] truth: " << in_scan[i]
                 << ", data: " << data[i] << endl;
       return -1;
