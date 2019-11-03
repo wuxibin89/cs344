@@ -3,15 +3,17 @@
 
 using namespace std;
 
-void HS_scan(unsigned int *const h_cdf, int numBins);
+void HS_scan(unsigned int *const h_cdf, int numBins, int block_size);
+void Blelloch_scan(unsigned int *const h_cdf, int numBins, int block_size);
 
 int main(int argc, char **argv) {
-  if (argc != 2) {
-    std::cerr << "usage: " << argv[0] << " nelems" << endl;
+  if (argc != 3) {
+    std::cerr << "usage: " << argv[0] << " nelems block_size" << endl;
     return -1;
   }
 
   int nelems = std::stoi(argv[1]);
+  int block_size = std::stoi(argv[2]);
 
   std::random_device rd;
   std::mt19937 gen(rd());
@@ -31,7 +33,7 @@ int main(int argc, char **argv) {
     ex_init += data[i];
   }
 
-  HS_scan(data, nelems);
+  HS_scan(data, nelems, block_size);
   for (int i = 0; i < nelems; ++i) {
     if (data[i] != in_scan[i]) {
       std::cerr << "[" << i << "] truth: " << in_scan[i]

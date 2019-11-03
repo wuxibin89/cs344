@@ -183,8 +183,8 @@ __global__ void HS_scan_kernel(unsigned int *d_cdf, unsigned int *d_out,
 }
 
 // Hillis & Steele inclusive scan
-void HS_scan_impl(unsigned int **d_cdf, unsigned int **d_out, int numBins) {
-  int block_size = 1024;
+void HS_scan_impl(unsigned int **d_cdf, unsigned int **d_out, int numBins,
+                  int block_size) {
   for (int stride = 1; stride < numBins; stride <<= 1) {
     // swith input and output every step
     if (stride != 1) {
@@ -200,7 +200,7 @@ void HS_scan_impl(unsigned int **d_cdf, unsigned int **d_out, int numBins) {
   }
 }
 
-void HS_scan(unsigned int *const h_cdf, int numBins) {
+void HS_scan(unsigned int *const h_cdf, int numBins, int block_size) {
   // need an out array to avoid data race
   unsigned int *d_cdf, *d_out;
   checkCudaErrors(cudaMalloc(&d_cdf, numBins * sizeof(unsigned int)));
@@ -211,7 +211,7 @@ void HS_scan(unsigned int *const h_cdf, int numBins) {
   checkCudaErrors(cudaMemcpy(d_out, h_cdf, numBins * sizeof(unsigned int),
                              cudaMemcpyHostToDevice));
 
-  HS_scan_impl(&d_cdf, &d_out, numBins);
+  HS_scan_impl(&d_cdf, &d_out, numBins, block_size);
   checkCudaErrors(cudaMemcpy(h_cdf, d_out, numBins * sizeof(unsigned int),
                              cudaMemcpyDeviceToHost));
 
@@ -219,20 +219,121 @@ void HS_scan(unsigned int *const h_cdf, int numBins) {
   checkCudaErrors(cudaFree(d_out));
 }
 
-// Blelloch exclusive scan
-__global__ void Blelloch_scan(unsigned int *const d_cdf, size_t numBins) {
-  int gid = threadIdx.x + blockIdx.x * blockDim.x;
+__global__ void UpSweep(unsigned int *const d_cdf, unsigned int *const d_sums) {
+  extern __shared__ unsigned int temp[];
 
-  if (gid == 0) {
-    int init = 0;
-    for (int i = 0; i < numBins; ++i) {
-      int temp = d_cdf[i];
-      d_cdf[i] = init;
-      init += temp;
+  int tid = threadIdx.x;
+  int gid = threadIdx.x + 2 * blockIdx.x * blockDim.x;
+  temp[tid] = d_cdf[gid];
+  temp[tid + blockDim.x] = d_cdf[gid + blockDim.x];
+  __syncthreads();
+
+  for (int stride = 1; stride < 2 * blockDim.x; stride <<= 1) {
+    int idx = (tid + 1) * stride * 2 - 1;
+    if (idx < 2 * blockDim.x) {
+      temp[idx] = temp[idx - stride] + temp[idx];
     }
+
+    __syncthreads();
   }
 
-  // TODO
+  d_cdf[gid] = temp[tid];
+  d_cdf[gid + blockDim.x] = temp[tid + blockDim.x];
+
+  if (tid == 0 && d_sums != NULL) {
+    d_sums[blockIdx.x] = temp[2 * blockDim.x - 1];
+  }
+}
+
+__global__ void DownSweep(unsigned int *const d_cdf) {
+  extern __shared__ unsigned int temp[];
+
+  int tid = threadIdx.x;
+  int gid = threadIdx.x + 2 * blockIdx.x * blockDim.x;
+  temp[tid] = d_cdf[gid];
+  temp[tid + blockDim.x] = d_cdf[gid + blockDim.x];
+  __syncthreads();
+
+  temp[2 * blockDim.x - 1] = 0;
+
+  for (int stride = blockDim.x; stride >= 1; stride >>= 1) {
+    int idx = (tid + 1) * stride * 2 - 1;
+    if (idx < 2 * blockDim.x) {
+      int t = temp[idx - stride];
+      temp[idx - stride] = temp[idx];
+      temp[idx] += t;
+    }
+
+    __syncthreads();
+  }
+
+  d_cdf[gid] = temp[tid];
+  d_cdf[gid + blockDim.x] = temp[tid + blockDim.x];
+}
+
+__global__ void BlockSum(unsigned int *const d_cdf,
+                         unsigned int *const d_sums) {
+  int gid = threadIdx.x + 2 * blockIdx.x * blockDim.x;
+  d_cdf[gid] += d_sums[blockIdx.x];
+  d_cdf[gid + blockDim.x] += d_sums[blockIdx.x];
+}
+
+// REQURES: d_cdf padding to 2 * block_size
+void Blelloch_scan_impl(unsigned int *const d_cdf, int numBins,
+                        int block_size) {
+  int grid_size = numBins / (2 * block_size);
+  int share_size = 2 * block_size * sizeof(unsigned int);
+
+  if (grid_size == 1) {
+    UpSweep<<<grid_size, block_size, share_size>>>(d_cdf, NULL);
+    DownSweep<<<grid_size, block_size, share_size>>>(d_cdf);
+  } else {
+    unsigned int *d_sums;
+    // padding block sums for futher Blelloch scan
+    int grid_size_ = (grid_size + 2 * block_size - 1) / (2 * block_size);
+    int padding = 2 * grid_size_ * block_size - grid_size;
+    checkCudaErrors(
+        cudaMalloc(&d_sums, (grid_size + padding) * sizeof(unsigned int)));
+
+    if (padding > 0) {
+      checkCudaErrors(
+          cudaMemset(d_sums + grid_size, 0, padding * sizeof(unsigned int)));
+    }
+
+    UpSweep<<<grid_size, block_size, share_size>>>(d_cdf, d_sums);
+    DownSweep<<<grid_size, block_size, share_size>>>(d_cdf);
+
+    Blelloch_scan_impl(d_sums, grid_size + padding, block_size);
+    BlockSum<<<grid_size, block_size>>>(d_cdf, d_sums);
+
+    checkCudaErrors(cudaFree(d_sums));
+  }
+}
+
+// Blelloch exclusive scan
+// reference: https://developer.nvidia.com/gpugems/GPUGems3/gpugems3_ch39.html
+void Blelloch_scan(unsigned int *const h_cdf, int numBins, int block_size) {
+  unsigned int *d_cdf;
+  // each thread block will handle two data block
+  int grid_size = (numBins + 2 * block_size - 1) / (2 * block_size);
+  int padding = 2 * grid_size * block_size - numBins;
+
+  checkCudaErrors(
+      cudaMalloc(&d_cdf, (numBins + padding) * sizeof(unsigned int)));
+  checkCudaErrors(cudaMemcpy(d_cdf, h_cdf, numBins * sizeof(unsigned int),
+                             cudaMemcpyHostToDevice));
+
+  // padding last block
+  if (padding > 0) {
+    checkCudaErrors(
+        cudaMemset(d_cdf + numBins, 0, padding * sizeof(unsigned int)));
+  }
+
+  Blelloch_scan_impl(d_cdf, numBins + padding, block_size);
+
+  checkCudaErrors(cudaMemcpy(h_cdf, d_cdf, numBins * sizeof(unsigned int),
+                             cudaMemcpyDeviceToHost));
+  checkCudaErrors(cudaFree(d_cdf));
 }
 
 void your_histogram_and_prefixsum(const float *const d_logLuminance,
@@ -268,5 +369,5 @@ void your_histogram_and_prefixsum(const float *const d_logLuminance,
   histogram<<<grid_size, block_size>>>(d_logLuminance, numElems, d_cdf, numBins,
                                        min_logLum, max_logLum);
 
-  Blelloch_scan<<<1, block_size>>>(d_cdf, numBins);
+  Blelloch_scan_impl(d_cdf, numBins, block_size);
 }
