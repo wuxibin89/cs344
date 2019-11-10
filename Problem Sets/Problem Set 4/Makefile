@@ -1,4 +1,4 @@
-NVCC=/usr/local/cuda-5.0/bin/nvcc
+NVCC=/usr/local/cuda-10.1/bin/nvcc
 #NVCC=nvcc
 
 ###################################
@@ -18,10 +18,10 @@ OPENCV_INCLUDEPATH=/usr/include
 
 OPENCV_LIBS=-lopencv_core -lopencv_imgproc -lopencv_highgui
 
-CUDA_INCLUDEPATH=/usr/local/cuda-5.0/include
+CUDA_INCLUDEPATH=/usr/local/cuda-10.1/include
 # CUDA_INCLUDEPATH=/usr/local/cuda/lib64/include
-# CUDA_INCLUDEPATH=/usr/local/cuda-5.0/include
-# CUDA_INCLUDEPATH=/Developer/NVIDIA/CUDA-5.0/include
+# CUDA_INCLUDEPATH=/usr/local/cuda-10.1/include
+# CUDA_INCLUDEPATH=/Developer/NVIDIA/CUDA-10.1/include
 
 ######################################################
 # On Macs the default install locations are below    #
@@ -29,14 +29,19 @@ CUDA_INCLUDEPATH=/usr/local/cuda-5.0/include
 
 #CUDA_INCLUDEPATH=/usr/local/cuda/include
 #CUDA_LIBPATH=/usr/local/cuda/lib
-CUDA_LIBPATH=/usr/local/cuda-5.0/lib64
+CUDA_LIBPATH=/usr/local/cuda-10.1/lib64
 
-NVCC_OPTS=-O3 -arch=sm_20 -Xcompiler -Wall -Xcompiler -Wextra -m64
+NVCC_OPTS=-O3 -std=c++11 -arch=sm_50 -Xcompiler -Wall -Xcompiler -Wextra -m64
 
-GCC_OPTS=-O3 -Wall -Wextra -m64
+GCC_OPTS=-O3 -Wall -Wextra -m64 -std=c++11
+
+all: student radix_sort_test
 
 student: main.o student_func.o HW4.o loadSaveImage.o compare.o reference_calc.o Makefile
 	$(NVCC) -o HW4 main.o student_func.o HW4.o loadSaveImage.o compare.o reference_calc.o -L $(OPENCV_LIBPATH) $(OPENCV_LIBS) $(NVCC_OPTS)
+
+radix_sort_test: radix_sort_test.o student_func.o
+	$(NVCC) $(NVCC_OPTS) radix_sort_test.o student_func.o -o $@
 
 main.o: main.cpp timer.h utils.h reference_calc.h
 	g++ -c main.cpp $(GCC_OPTS) -I $(CUDA_INCLUDEPATH)
